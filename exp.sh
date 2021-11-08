@@ -2,4 +2,5 @@
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate generative
 cd workspace/colorizationXXX
+mkdir -p output
 python train.py
