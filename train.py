@@ -21,15 +21,6 @@ HPSIZE = PSIZE//2
 
 tf = transforms.ToTensor()
 
-imga = "data/img2_512.png"
-imgb = "data/img1_512.png"
-
-# Resize the image to 256x256
-s = 256
-a = tf(Image.open(imga).resize((s,s))).unsqueeze(0).to("cuda")
-b = tf(Image.open(imgb).resize((s,s))).unsqueeze(0).to("cuda")
-
-
 class MyModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -37,7 +28,7 @@ class MyModel(torch.nn.Module):
         self.convq = nn.Sequential(nn.Conv2d(3, n_channels, 3, padding=1), nn.ReLU())
         self.convk = nn.Sequential(nn.Conv2d(3, n_channels, 3, padding=1), nn.ReLU())
         self.convv = nn.Sequential(nn.Conv2d(3, n_channels, 3, padding=1), nn.ReLU())
-        self.final = nn.Sequential(nn.Conv2d(n_channels, 3, 3, padding=1), nn.Sigmoid())
+        self.final = nn.Sequential(nn.Conv2d(3 + n_channels, 3, 3, padding=1), nn.Sigmoid())
 
     def forward(self, a, b):
         # First conv layer for Q, K, V
@@ -45,9 +36,9 @@ class MyModel(torch.nn.Module):
         k = self.convk(b)
         v = self.convv(b)
 
-        att = full_attention_layer(q,k,v)
+        att, _, _ = attention_layer(q,k,v)
 
-        return self.final(att)
+        return self.final(torch.cat((a, att), dim=1))
 
 
 class PatchMatch(Function):
@@ -111,20 +102,53 @@ def attention_layer(q, k, v):
 model = MyModel().cuda()
 optimizer = Adam(model.parameters(), lr=0.001)
 
-# Input data
-a_color = a.clone()
-a[:] = torch.mean(a_color, dim=1, keepdim=True)
+from torch.utils.data import Dataset, DataLoader
+from glob import glob
+from os.path import join
+class MyDataset(Dataset):
+    def __init__(self, path):
+        self.folders = {}
+        for f in glob(join(path, "*/")):
+            images = glob(join(f, "*.jpg"))
+            if len(images) > 0:
+                self.folders[f] = images
 
-start_time = time()
-for i in range(10000):
-    optimizer.zero_grad()
-    reconstruction = model(a, b)
-    diff = (reconstruction - a_color)**2
-    loss = torch.mean(diff[:,:,PSIZE:-PSIZE, PSIZE:-PSIZE])
-    loss.backward()
-    optimizer.step()
+    def __len__(self):
+        return 10000
 
-    if i % 100 == 0:
-        print(f"{i:05d},{loss.item():0.05f},{(time() - start_time)*10:0.02f}ms")
-        start_time = time()
-        save_image(reconstruction.clone().detach(), f"output/{i:05d}.png")
+    def __getitem__(self, idx):
+        folder = np.random.choice(list(self.folders.keys()))
+        imga, imgb = np.random.choice(self.folders[folder], 2, replace=False)
+        s = 256
+        a = tf(Image.open(imga).resize((s,s))).to("cuda")
+        b = tf(Image.open(imgb).resize((s,s))).to("cuda")
+
+        return a, b
+
+
+dataset = MyDataset("../data/DAVIS/JPEGImages/480p")
+
+for j in range(20):
+    dataloader = DataLoader(dataset, batch_size=1)
+
+    start_time = time()
+    for i, batch in enumerate(dataloader):
+        a, b = batch
+
+        a_color = a.clone()
+        a[:] = torch.mean(a_color, dim=1, keepdim=True)
+
+        optimizer.zero_grad()
+        reconstruction = model(a, b)
+        diff = (reconstruction - a_color)**2
+        loss = torch.mean(diff[:,:,PSIZE:-PSIZE, PSIZE:-PSIZE])
+        loss.backward()
+        optimizer.step()
+
+        if i % 100 == 0:
+            print(f"{j:02d},{i:05d},{loss.item():0.05f},{(time() - start_time)*10:0.02f}ms")
+            start_time = time()
+            save_image(reconstruction.clone().detach(), f"output/{i:05d}.png")
+
+torch.save(model, "last_model.pth")
+torch.save(optimizer, "last_optimizer.pth")
