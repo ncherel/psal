@@ -8,7 +8,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define K 15
+#define K 3
 #define PATCH_SIZE 7
 #define H_PATCH_SIZE 3
 
@@ -20,24 +20,24 @@ __device__ int randint(int a, int b, int64_t *seed) {
   *seed = *seed ^ (*seed >> 4);
   *seed *= 668265261;
   *seed = *seed ^ (*seed >> 15);
-  return (*seed) % (b - a + 1) + a;
+  return (*seed) % (b - a) + a;
 }
 
 
 template <typename T>
 __device__ void add_to_heap(T value, T* heap, int* shifts, int ii, int jj, int size) {
   auto idx = size - 1;
-  auto parent_idx = (idx-1) / 2;
+  auto parent_idx = idx-1;
 
-  while(idx > 0 && value < heap[parent_idx]) {
+  while(idx > 0 && value > heap[parent_idx]) {
     // Swap
     heap[idx] = heap[parent_idx];
     shifts[2*idx] = shifts[2*parent_idx];
     shifts[2*idx+1] = shifts[2*parent_idx+1];
     
     // Go up
-    parent_idx = (parent_idx-1) / 2;
-    idx = (idx-1) / 2;
+    parent_idx = parent_idx-1;
+    idx = idx-1;
   }
 
   heap[idx] = value;
@@ -54,15 +54,10 @@ __device__ void insert_into_heap(T* heap, int* shifts, T value, int ii, int jj, 
   
   while(has_changed) {
     has_changed = 0;
-    auto left = 2*idx+1;
-    auto right = 2*idx+2;
+    auto left = idx+1;
 
-    if (left < size && heap[left] > value) {
-      child = left;
-    }
-
-    if (right < size && heap[right] > value) {
-      child = right;
+    if (left < size && value < heap[left]) {
+        child = left;
     }
 
     if(child != idx) {
@@ -310,7 +305,7 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
 
     auto worst_distance = local_heap[0];
 
-    for(int step_length=1; step_length <= 4; step_length *= 2) {
+    for(int step_length=1; step_length <= 8; step_length *= 2) {
       for(int index = 0; index < 4; index++) {
 	auto di = dis[index] * step_length;
 	auto dj = djs[index] * step_length;
@@ -318,7 +313,7 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
 	if (!is_in_inner_boundaries(t1, i+di, j+dj)) {
 	  continue;
 	}
-      
+
 	auto ii = shift_map[0][K-1][i+di][j+dj] - di;
 	auto jj = shift_map[1][K-1][i+di][j+dj] - dj;
       
@@ -364,18 +359,10 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
     auto local_state = states[i][j];
 
     // Find best
-    auto best_ii = local_shift[0];
-    auto best_jj = local_shift[1];
-    auto best_distance = local_heap[0];
+    auto best_ii = local_shift[2*(K-1)];
+    auto best_jj = local_shift[2*(K-1)+1];
+    auto best_distance = local_heap[K-1];
     auto worst_distance = local_heap[0];
-
-    for(int k=K/2; k < K; k++) {
-      if(local_heap[k] < best_distance) {
-	best_distance = local_heap[k];
-	best_ii = local_shift[2*k];
-	best_jj = local_shift[2*k+1];
-      }
-    }
 
     const auto alpha = 0.5;
     auto wmax = max(t2.size(1), t2.size(2));
@@ -420,8 +407,8 @@ __global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::Restrict
   // Compute the gradients using the patches that contain the given pixel (to avoid race conditions)
   if(is_in_inner_boundaries(a, i, j)) {
     for(int k=0; k < K; k++) {
-      for(int di=-H_PATCH_SIZE; di < H_PATCH_SIZE; di++) {
-	for(int dj=-H_PATCH_SIZE; dj < H_PATCH_SIZE; dj++) {
+      for(int di=-H_PATCH_SIZE; di < H_PATCH_SIZE + 1; di++) {
+	for(int dj=-H_PATCH_SIZE; dj < H_PATCH_SIZE + 1; dj++) {
 	  // Shifted positions
 	  auto ii = shift_map[0][k][i+di][j+dj];
 	  auto jj = shift_map[1][k][i+di][j+dj];

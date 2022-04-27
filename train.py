@@ -24,11 +24,11 @@ tf = transforms.ToTensor()
 class MyModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        n_channels = 16
+        n_channels = 3
         self.convq = nn.Sequential(nn.Conv2d(3, n_channels, 3, padding=1), nn.ReLU())
         self.convk = nn.Sequential(nn.Conv2d(3, n_channels, 3, padding=1), nn.ReLU())
         self.convv = nn.Sequential(nn.Conv2d(3, n_channels, 3, padding=1), nn.ReLU())
-        self.final = nn.Sequential(nn.Conv2d(3 + n_channels, 3, 3, padding=1), nn.Sigmoid())
+        self.final = nn.Sequential(nn.Conv2d(n_channels, 3, 3, padding=1), nn.Sigmoid())
 
     def forward(self, a, b):
         # First conv layer for Q, K, V
@@ -36,9 +36,9 @@ class MyModel(torch.nn.Module):
         k = self.convk(b)
         v = self.convv(b)
 
-        att, _, _ = attention_layer(q,k,v)
+        att = attention_layer(q,k,v)
 
-        return self.final(torch.cat((a, att), dim=1))
+        return self.final(att)
 
 
 class PatchMatch(Function):
@@ -83,6 +83,32 @@ def full_attention_layer(q, k, v, T=1):
     return reconstruction
 
 
+def r_pytorch(b, shift_map, cost_map, psize=7):
+    p = psize//2
+    K, H, W = cost_map.shape
+    padded_cost_map = pad(cost_map, (p,p,p,p), value=10)
+    padded_shift_map = pad(shift_map, (p,p,p,p), value=10)  # Add a padding value in the valid region
+    all_cost_map = torch.zeros((psize*psize*K, H, W), device="cuda")
+    all_shift_map = torch.zeros((2, psize*psize*K, H, W), dtype=torch.int64, device="cuda")
+    idx = 0
+    # Complicated computation going on:
+    for di in range(psize):
+        for dj in range(psize):
+            start_i, start_j = di, dj
+            end_i, end_j = H + di, W + dj
+            pi, pj = psize//2 - di, psize//2 - dj  # Relative to the patch position (reference is central pixel)
+            all_cost_map[K*idx:K*(idx+1)] = padded_cost_map[:,start_i:end_i, start_j:end_j]
+            all_shift_map[0, K*idx:K*(idx+1)] = padded_shift_map[0,:,start_i:end_i,start_j:end_j] + pi
+            all_shift_map[1, K*idx:K*(idx+1)] = padded_shift_map[1,:,start_i:end_i,start_j:end_j] + pj
+            idx += 1
+    all_cost_map = torch.softmax(-all_cost_map, dim=0)
+    all_shift_map[0] = torch.clamp(all_shift_map[0], 0, b.shape[2]-1)
+    all_shift_map[1] = torch.clamp(all_shift_map[1], 0, b.shape[3]-1)
+
+    r = torch.sum(all_cost_map[None, None, :, :, :] * b[:,:,all_shift_map[0], all_shift_map[1]], dim=2)
+    return r
+
+
 def attention_layer(q, k, v):
     """Can only handle batch of size 1"""
     # PatchMatch layer takes C H W tensor
@@ -94,8 +120,9 @@ def attention_layer(q, k, v):
     # Simple reconstruction using the central pixel and no weighting scheme
     cost_map = torch.softmax(-cost_map, dim=0)
     reconstruction = torch.sum(cost_map[None, None, :, :, :] * v[:,:,shift_map[0], shift_map[1]], dim=2)
+    # reconstruction = r_pytorch(v, shift_map, cost_map)
 
-    return reconstruction, shift_map, cost_map
+    return reconstruction
 
 
 
@@ -126,29 +153,29 @@ class MyDataset(Dataset):
         return a, b
 
 
-dataset = MyDataset("../data/DAVIS/JPEGImages/480p")
+if __name__ == '__main__':
+    dataset = MyDataset("../data/DAVIS/JPEGImages/480p")
 
-for j in range(20):
-    dataloader = DataLoader(dataset, batch_size=1)
+    for j in range(20):
+        dataloader = DataLoader(dataset, batch_size=1)
 
-    start_time = time()
-    for i, batch in enumerate(dataloader):
-        a, b = batch
+        start_time = time()
+        for i, batch in enumerate(dataloader):
+            a, b = batch
 
-        a_color = a.clone()
-        a[:] = torch.mean(a_color, dim=1, keepdim=True)
+            a_color = a.clone()
 
-        optimizer.zero_grad()
-        reconstruction = model(a, b)
-        diff = (reconstruction - a_color)**2
-        loss = torch.mean(diff[:,:,PSIZE:-PSIZE, PSIZE:-PSIZE])
-        loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            reconstruction = model(a, b)
+            diff = (reconstruction - a_color)**2
+            loss = torch.mean(diff[:,:,PSIZE:-PSIZE, PSIZE:-PSIZE])
+            loss.backward()
+            optimizer.step()
 
-        if i % 100 == 0:
-            print(f"{j:02d},{i:05d},{loss.item():0.05f},{(time() - start_time)*10:0.02f}ms")
-            start_time = time()
-            save_image(reconstruction.clone().detach(), f"output/{i:05d}.png")
+            if i % 100 == 0:
+                print(f"{j:02d},{i:05d},{loss.item():0.05f},{(time() - start_time)*10:0.02f}ms")
+                start_time = time()
+                save_image(reconstruction.clone().detach(), f"output/{i:05d}.png")
 
-torch.save(model, "last_model.pth")
-torch.save(optimizer, "last_optimizer.pth")
+    torch.save(model, "last_model.pth")
+    torch.save(optimizer, "last_optimizer.pth")
