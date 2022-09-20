@@ -1,6 +1,14 @@
-from setuptools import setup, Extension
+from setuptools import setup, find_packages
 from torch.utils import cpp_extension
 
-setup(name='reconstruction',
-      ext_modules=[cpp_extension.CUDAExtension('reconstruction', ['base_patchmatch.cu'])],
-      cmdclass={'build_ext': cpp_extension.BuildExtension})
+setup(name='psal',
+      packages=find_packages(
+          where="src"
+      ),
+      ext_modules=[
+          cpp_extension.CUDAExtension('psal.patchmatch', ['src/patchmatch.cu'])
+      ],
+      cmdclass={
+          'build_ext': cpp_extension.BuildExtension
+      }
+)
