@@ -24,32 +24,29 @@ class PatchMatch(Function):
 
 
 class PSAttention(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, n_iters=5, T=1.0):
         super().__init__()
+        self.n_iters = n_iters
+        self.T = T
 
     def forward(self, q, k, v):
-        q = q[0]
-        k = k[0]
+        assert(q.shape[0] == k.shape[0])  # Same batch size
+        assert(q.shape[1] == k.shape[1])  # Same number of channels (Q/K)
+        assert(k.shape[2] == v.shape[2])  # Same spatial dimensions (K/V)
+        assert(k.shape[3] == v.shape[3])
 
-        shift_map, cost_map = PatchMatch.apply(q, k)
+        output = torch.zeros(q.shape[0], v.shape[1], q.shape[2], q.shape[3], device=q.device)
+        for i, (qi, ki, vi) in enumerate(zip(q, k, v)):
+            output[i] = attention_layer(qi, ki, vi, self.n_iters, self.T)
 
-        # Simple reconstruction using the central pixel and no weighting scheme
-        cost_map = torch.softmax(-cost_map, dim=0)
-        reconstruction = torch.sum(cost_map[None, None, :, :, :] * v[:,:,shift_map[0], shift_map[1]], dim=2)
-
-        return reconstruction
+        return output
 
 
-def attention_layer(q, k, v):
-    """Can only handle batch of size 1"""
-    # PatchMatch layer takes C H W tensor
-    q = q[0]
-    k = k[0]
-
-    shift_map, cost_map = PatchMatch.apply(q, k)
+def attention_layer(q, k, v, n_iters=5, T=1.0):
+    shift_map, cost_map = PatchMatch.apply(q, k, n_iters)
 
     # Simple reconstruction using the central pixel and no weighting scheme
-    cost_map = torch.softmax(-cost_map, dim=0)
-    reconstruction = torch.sum(cost_map[None, None, :, :, :] * v[:,:,shift_map[0], shift_map[1]], dim=2)
+    cost_map = torch.softmax(-cost_map/T, dim=0)
+    reconstruction = torch.sum(cost_map[None, None, :, :, :] * v[:,shift_map[0], shift_map[1]], dim=2)
 
     return reconstruction

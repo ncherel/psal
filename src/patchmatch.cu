@@ -69,7 +69,7 @@ __device__ void insert_into_heap(T* heap, int* shifts, T value, int ii, int jj, 
     }
   }
 
-  // Insert new node at his right place
+  // Insert new node at its right place
   heap[idx] = value;
   shifts[2*idx] = ii;
   shifts[2*idx+1] = jj;
@@ -125,21 +125,12 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
 			      at::PackedTensorAccessor32<int64_t, 2, torch::RestrictPtrTraits> states);
 
 template <typename T>
-__global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> a,
-			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> b,
-			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_a,
-			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_b,
+__global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t1,
+			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t2,
+			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_t1,
+			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_t2,
 			      at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
 			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> cost_map);
-
-template <typename T>
-__global__ void no_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> a,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> b,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_a,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_b,
-			  at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> cost_map);
-
 
 std::vector<at::Tensor> patchmatch_cuda(const at::Tensor t1,
 					const at::Tensor t2,
@@ -174,43 +165,35 @@ std::vector<at::Tensor> patchmatch_cuda(const at::Tensor t1,
 }
 
 
-std::vector<at::Tensor> backward_cuda(const at::Tensor a,
-				      const at::Tensor b,
+std::vector<at::Tensor> backward_cuda(const at::Tensor t1,
+				      const at::Tensor t2,
 				      const at::Tensor shift_map,
 				      const at::Tensor cost_map_grad) {
-  // TODO: find the right way to create the gradients
-  auto grad_a = torch::zeros_like(a);
-  auto grad_b = torch::zeros_like(b);
+  auto grad_t1 = torch::zeros_like(t1);
+  auto grad_t2 = torch::zeros_like(t2);
 
   // Must make the grid large enough to cover all pixels
   const dim3 blocks(4, 4);
-  const dim3 grid(int(a.size(1) / blocks.x) + 1, int(a.size(2) / blocks.y) + 1);
+  const dim3 grid(int(t1.size(1) / blocks.x) + 1, int(t1.size(2) / blocks.y) + 1);
 
-  AT_DISPATCH_FLOATING_TYPES(a.scalar_type(), "backward_cuda", ([&] {
-	auto a_accessor = a.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
-	auto b_accessor = b.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
-	auto grad_a_accessor = grad_a.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
-	auto grad_b_accessor = grad_b.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
+  AT_DISPATCH_FLOATING_TYPES(t1.scalar_type(), "backward_cuda", ([&] {
+	auto t1_accessor = t1.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
+	auto t2_accessor = t2.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
+	auto grad_t1_accessor = grad_t1.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
+	auto grad_t2_accessor = grad_t2.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
 	auto shift_map_accessor = shift_map.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
 	auto cost_map_accessor = cost_map_grad.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
 
 	// Run the single kernel for backprop
-	backward_kernel<<<grid, blocks>>>(a_accessor,
-					  b_accessor,
-					  grad_a_accessor,
-					  grad_b_accessor,
+	backward_kernel<<<grid, blocks>>>(t1_accessor,
+					  t2_accessor,
+					  grad_t1_accessor,
+					  grad_t2_accessor,
 					  shift_map_accessor,
 					  cost_map_accessor);
-	// Run the single kernel for backprop
-	// no_kernel<<<1, 1>>>(a_accessor,
-			    // b_accessor,
-			    // grad_a_accessor,
-			    // grad_b_accessor,
-			    // shift_map_accessor,
-			    // cost_map_accessor);
   }));
 
-  return {grad_a, grad_b};
+  return {grad_t1, grad_t2};
 }
 
 
@@ -358,16 +341,16 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
 
     auto local_state = states[i][j];
 
-    // Find best
+    // Sample around current best
     auto best_ii = local_shift[2*(K-1)];
     auto best_jj = local_shift[2*(K-1)+1];
-    auto best_distance = local_heap[K-1];
+
+    // Worst match
     auto worst_distance = local_heap[0];
 
     const auto alpha = 0.5;
     auto wmax = max(t2.size(1), t2.size(2));
     int zmax = - logf(wmax) / logf(alpha);
-    
 
     // Sample around the current match with a uniform window
     for(int z=0; z < zmax; z++) {
@@ -395,17 +378,17 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
 }
 
 template <typename T>
-__global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> a,
-			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> b,
-			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_a,
-			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_b,
+__global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t1,
+			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t2,
+			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_t1,
+			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_t2,
 			      at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
 			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> cost_map) {
   int32_t i = blockDim.x * blockIdx.x + threadIdx.x;
   int32_t j = blockDim.y * blockIdx.y + threadIdx.y;
 
   // Compute the gradients using the patches that contain the given pixel (to avoid race conditions)
-  if(is_in_inner_boundaries(a, i, j)) {
+  if(is_in_inner_boundaries(t1, i, j)) {
     for(int k=0; k < K; k++) {
       for(int di=-H_PATCH_SIZE; di < H_PATCH_SIZE + 1; di++) {
 	for(int dj=-H_PATCH_SIZE; dj < H_PATCH_SIZE + 1; dj++) {
@@ -413,36 +396,12 @@ __global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::Restrict
 	  auto ii = shift_map[0][k][i+di][j+dj];
 	  auto jj = shift_map[1][k][i+di][j+dj];
 
-	  for(int c=0; c < a.size(0); c++) {
-	    grad_a[c][i][j] += 2 * (a[c][i][j] - b[c][ii-di][jj-dj]) * cost_map[k][i+di][j+dj];
+	  for(int c=0; c < t1.size(0); c++) {
+	    grad_t1[c][i][j] += 2 * (t1[c][i][j] - t2[c][ii-di][jj-dj]) * cost_map[k][i+di][j+dj];
 
-	    // Race condition
-	    grad_b[c][ii-di][jj-dj] += 2 * (b[c][ii-di][jj-dj] - a[c][i][j]) * cost_map[k][i+di][j+dj];
+	    // Race condition for grad_t2
+	    grad_t2[c][ii-di][jj-dj] += 2 * (t2[c][ii-di][jj-dj] - t1[c][i][j]) * cost_map[k][i+di][j+dj];
 	  }
-	}
-      }
-    }
-  }
-}
-
-template <typename T>
-__global__ void no_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> a,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> b,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_a,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_b,
-			  at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
-			  at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> cost_map) {
-
-  for(int i=0; i < a.size(1); i++) {
-    for(int j=0; j < a.size(2); j++) {
-      for(int k=0; k < K; k++) {
-	// Shifted positions
-	auto ii = shift_map[0][k][i][j];
-	auto jj = shift_map[1][k][i][j];
-      
-	// Gradient for b : race condition
-	for(int c=0; c < a.size(0); c++) {
-	  grad_b[c][ii][jj] += 2 * (b[c][ii][jj] - a[c][i][j]) * cost_map[k][i][j];
 	}
       }
     }

@@ -2,9 +2,8 @@ from setuptools import setup, find_packages
 from torch.utils import cpp_extension
 
 setup(name='psal',
-      packages=find_packages(
-          where="src"
-      ),
+      package_dir={"psal": "src"},
+      py_modules=["psal.psal_attention"],
       ext_modules=[
           cpp_extension.CUDAExtension('psal.patchmatch', ['src/patchmatch.cu'])
       ],
