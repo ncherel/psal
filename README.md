@@ -7,6 +7,18 @@ PSAL is an efficient attention layer for images and features-maps. It is based o
 
 PSAL contains CUDA code and can only be run on GPU. PSAL is available as a PyTorch extension. You'll need CUDA with NVCC support and PyTorch.
 
+Important packages are:
+- PyTorch (with GPU support)
+- Cudatoolkit-dev (for NVCC)
+- C/C++ compiler compatible with NVCC
+
+Suggested versions:
+```
+conda install pytorch==1.7.1 torchvision==0.8.2 cudatoolkit=10.1 -c pytorch
+conda install cudatoolkit-dev=10.1.243 -c conda-forge
+conda install gcc_linux-64=7.3 gxx_linux-64=7.3
+```
+
 Once all requirements are met, you can install and test the module:
 ```
 python setup.py install
@@ -16,7 +28,7 @@ python test.py
 
 ## Use
 
-Cross-Attention is implemented in the following manner:
+Cross-Attention with L2 distance is implemented in the following manner:
 
 ```python
 import torch
