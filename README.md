@@ -3,6 +3,8 @@
 This repository contains the code associated to the paper Patch-Based Stochastic Attention for Image Editing (https://arxiv.org/abs/2202.03163)
 PSAL is an efficient attention layer for images and features-maps. It is based on an efficient nearest-neighbor search approach, fueled by PatchMatch.
 
+![PSAL mechanism](data/teaser.png)
+
 ## Installation
 
 PSAL contains CUDA code and can only be run on GPU. PSAL is available as a PyTorch extension. You'll need CUDA with NVCC support and PyTorch.
