@@ -20,7 +20,7 @@ s = 512
 a = tf(Image.open(imga).resize((s,s))).to("cuda").unsqueeze(0)
 b = tf(Image.open(imgb).resize((s,s))).to("cuda").unsqueeze(0)
 
-attention = PSAttention(n_iters=10)
+attention = PSAttention(n_iters=10, patch_size=7, aggregation=False)
 
 if __name__ == '__main__':
     start_time = time()

@@ -24,10 +24,49 @@ class PatchMatch(Function):
 
 
 class PSAttention(torch.nn.Module):
-    def __init__(self, n_iters=5, T=1.0):
+    def __init__(self, patch_size=3, n_iters=5, T=1.0, aggregation=False):
         super().__init__()
+        self.patch_size = patch_size
         self.n_iters = n_iters
         self.T = T
+        self.aggregation = aggregation
+
+    def attention(self, q, k, v):
+        shift_map, cost_map = PatchMatch.apply(q, k, self.n_iters)
+
+        if not self.aggregation:
+            # Simple reconstruction using the central pixel
+            cost_map = torch.softmax(-cost_map/self.T, dim=0)
+            reconstruction = torch.sum(cost_map[None, None, :, :, :] * v[:,shift_map[0], shift_map[1]], dim=2)
+
+        else:
+            reconstruction = self.aggregate(v, shift_map, cost_map)
+
+        return reconstruction
+
+    def aggregate(self, v, shift_map, cost_map):
+        p = self.patch_size//2
+        K, H, W = cost_map.shape
+        padded_cost_map = pad(cost_map, (p,p,p,p), value=10)
+        padded_shift_map = pad(shift_map, (p,p,p,p), value=10)  # Add a padding value in the valid region
+        all_cost_map = torch.zeros((self.patch_size*self.patch_size*K, H, W), device="cuda")
+        all_shift_map = torch.zeros((2, self.patch_size*self.patch_size*K, H, W), dtype=torch.int64, device="cuda")
+        idx = 0
+        # Complicated computation going on:
+        for di in range(self.patch_size):
+            for dj in range(self.patch_size):
+                start_i, start_j = di, dj
+                end_i, end_j = H + di, W + dj
+                pi, pj = p - di, p - dj  # Relative to the patch position (reference is central pixel)
+                all_cost_map[K*idx:K*(idx+1)] = padded_cost_map[:,start_i:end_i, start_j:end_j]
+                all_shift_map[0, K*idx:K*(idx+1)] = padded_shift_map[0,:,start_i:end_i,start_j:end_j] + pi
+                all_shift_map[1, K*idx:K*(idx+1)] = padded_shift_map[1,:,start_i:end_i,start_j:end_j] + pj
+                idx += 1
+        all_cost_map = torch.softmax(-all_cost_map / self.T, dim=0)
+        all_shift_map[0] = torch.clamp(all_shift_map[0], 0, v.shape[1]-1)
+        all_shift_map[1] = torch.clamp(all_shift_map[1], 0, v.shape[2]-1)
+
+        return torch.sum(all_cost_map[None, None, :, :, :] * v[:,all_shift_map[0], all_shift_map[1]], dim=2)
 
     def forward(self, q, k, v):
         assert(q.shape[0] == k.shape[0])  # Same batch size
@@ -36,17 +75,8 @@ class PSAttention(torch.nn.Module):
         assert(k.shape[3] == v.shape[3])
 
         output = torch.zeros(q.shape[0], v.shape[1], q.shape[2], q.shape[3], device=q.device)
+        # Process batch elements one by one
         for i, (qi, ki, vi) in enumerate(zip(q, k, v)):
-            output[i] = attention_layer(qi, ki, vi, self.n_iters, self.T)
+            output[i] = self.attention(qi, ki, vi)
 
         return output
-
-
-def attention_layer(q, k, v, n_iters=5, T=1.0):
-    shift_map, cost_map = PatchMatch.apply(q, k, n_iters)
-
-    # Simple reconstruction using the central pixel and no weighting scheme
-    cost_map = torch.softmax(-cost_map/T, dim=0)
-    reconstruction = torch.sum(cost_map[None, None, :, :, :] * v[:,shift_map[0], shift_map[1]], dim=2)
-
-    return reconstruction
