@@ -228,11 +228,15 @@ __global__ void initialise_shift_map(at::PackedTensorAccessor32<T, 3, torch::Res
     states[i][j] = local_state;
   }
   else if(i < t1.size(1) && j < t1.size(2)) {
+    // For pixel at the borders, draw random shifts but do not compute
+    // the distances as they are invalid
+    auto local_state = states[i][j];
     for(int k=0; k < K; k++) {
-      shift_map[0][k][i][j] = i;
-      shift_map[1][k][i][j] = j;
+      shift_map[0][k][i][j] = randint(H_PATCH_SIZE, t2.size(1) - H_PATCH_SIZE, &local_state);;
+      shift_map[1][k][i][j] = randint(H_PATCH_SIZE, t2.size(2) - H_PATCH_SIZE, &local_state);;
       cost_map[k][i][j] = 0.0;
     }
+    states[i][j] = local_state;
   }
 }
 
