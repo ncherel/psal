@@ -1,1 +1,1 @@
-from .psal_attention import PSAttention
+from .psal_attention import PSAttention, PSAttentionMasked
