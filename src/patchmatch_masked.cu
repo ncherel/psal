@@ -11,33 +11,33 @@
 #include <cuda_runtime.h>
 
 
-template <typename T>
+template <typename T, int PSZ>
 __device__ T dist(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 		  int32_t x1, int32_t y1,
 		  int32_t x2, int32_t y2,
 		  T cutoff=1e10);
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void initialise_shift_map(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 				     at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 				     at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
 				     at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> cost_map,
 				     at::PackedTensorAccessor32<int64_t, 2, torch::RestrictPtrTraits> states);
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 			    at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 			    at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
 			    at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> cost_map);
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 			      at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 			      at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
 			      at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> cost_map,
 			      at::PackedTensorAccessor32<int64_t, 2, torch::RestrictPtrTraits> states);
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> a,
 				at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 				at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_a,
@@ -46,6 +46,7 @@ __global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::Restrict
 
 std::vector<at::Tensor> patchmatch_cuda_masked(const at::Tensor t,
 					       const at::Tensor mask,
+					       int patch_size=3,
 					       int n_iters=10) {
   auto H = t.size(1);
   auto W = t.size(2);
@@ -66,12 +67,27 @@ std::vector<at::Tensor> patchmatch_cuda_masked(const at::Tensor t,
 	auto mask_accessor = mask.packed_accessor32<bool, 2, torch::RestrictPtrTraits>();
 	auto states_accessor = states.packed_accessor32<int64_t, 2, torch::RestrictPtrTraits>();
 
-	initialise_shift_map<<<grid, blocks>>>(t_accessor, mask_accessor, shift_map_accessor, cost_map_accessor, states_accessor);
 
-	for(int i = 0; i < n_iters; i++) {
-	  propagation<<<grid, blocks>>>(t_accessor, mask_accessor, shift_map_accessor, cost_map_accessor);
-	  random_search<<<grid, blocks>>>(t_accessor, mask_accessor, shift_map_accessor, cost_map_accessor, states_accessor);
-	}
+        #define patch_match_n(psize) { \
+	  initialise_shift_map<scalar_t, psize><<<grid, blocks>>>(t_accessor, mask_accessor, shift_map_accessor, cost_map_accessor, states_accessor); \
+	  for(int i = 0; i < n_iters; i++) { \
+	    propagation<scalar_t, psize><<<grid, blocks>>>(t_accessor, mask_accessor, shift_map_accessor, cost_map_accessor); \
+	    random_search<scalar_t, psize><<<grid, blocks>>>(t_accessor, mask_accessor, shift_map_accessor, cost_map_accessor, states_accessor); \
+          } }
+
+	// Dispatch to template
+	if (patch_size == 1) patch_match_n(1)
+	if (patch_size == 3) patch_match_n(3)
+	if (patch_size == 5) patch_match_n(5)
+	if (patch_size == 7) patch_match_n(7)
+	if (patch_size == 9) patch_match_n(9)
+	if (patch_size == 11) patch_match_n(11)
+	if (patch_size == 12) patch_match_n(13)
+	if (patch_size == 15) patch_match_n(15)
+	if (patch_size == 17) patch_match_n(17)
+	if (patch_size == 19) patch_match_n(19)
+	if (patch_size == 21) patch_match_n(21)
+	if (patch_size == 23) patch_match_n(23)
   }));
 
   return {shift_map, cost_map};
@@ -80,7 +96,8 @@ std::vector<at::Tensor> patchmatch_cuda_masked(const at::Tensor t,
 at::Tensor backward_cuda_masked(const at::Tensor a,
 				const at::Tensor mask,
 				const at::Tensor shift_map,
-				const at::Tensor cost_map) {
+				const at::Tensor cost_map,
+				int patch_size=3) {
   auto grad_a = torch::zeros_like(a);
 
   // Must make the grid large enough to cover all pixels
@@ -94,18 +111,27 @@ at::Tensor backward_cuda_masked(const at::Tensor a,
 	auto shift_map_accessor = shift_map.packed_accessor32<int32_t, 4, torch::RestrictPtrTraits>();
 	auto cost_map_accessor = cost_map.packed_accessor32<scalar_t, 3, torch::RestrictPtrTraits>();
 
-	// Run the single kernel for backprop
-	backward_kernel<<<grid, blocks>>>(a_accessor,
-					  mask_accessor,
-					  grad_a_accessor,
-					  shift_map_accessor,
-					  cost_map_accessor);
+        #define backward_n(psize) {backward_kernel<scalar_t, psize><<<grid, blocks>>>(a_accessor, mask_accessor, grad_a_accessor, shift_map_accessor, cost_map_accessor);}
+
+	// Dispatch to template
+	if (patch_size == 1) backward_n(1)
+	if (patch_size == 3) backward_n(3)
+	if (patch_size == 5) backward_n(5)
+	if (patch_size == 7) backward_n(7)
+	if (patch_size == 9) backward_n(9)
+	if (patch_size == 11) backward_n(11)
+	if (patch_size == 12) backward_n(13)
+	if (patch_size == 15) backward_n(15)
+	if (patch_size == 17) backward_n(17)
+	if (patch_size == 19) backward_n(19)
+	if (patch_size == 21) backward_n(21)
+	if (patch_size == 23) backward_n(23)
   }));
 
   return grad_a;
 }
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void initialise_shift_map(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 				     at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 				     at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
@@ -114,21 +140,21 @@ __global__ void initialise_shift_map(at::PackedTensorAccessor32<T, 3, torch::Res
   int32_t i = blockDim.x * blockIdx.x + threadIdx.x;
   int32_t j = blockDim.y * blockIdx.y + threadIdx.y;
   
-  if (is_in_inner_boundaries(t, i, j) && is_masked(mask, i, j)) {
+  if (is_in_inner_boundaries<T,3,PSZ>(t, i, j) && is_masked(mask, i, j)) {
     auto local_state = states[i][j];
     T local_heap[K];
     int32_t local_heap_shift[K*2];
 
     for(int k=0; k < K; k++) {
-      auto ii = randint(H_PATCH_SIZE, t.size(1) - H_PATCH_SIZE, &local_state);
-      auto jj = randint(H_PATCH_SIZE, t.size(2) - H_PATCH_SIZE, &local_state);
+      auto ii = randint(PSZ/2, t.size(1) - PSZ/2, &local_state);
+      auto jj = randint(PSZ/2, t.size(2) - PSZ/2, &local_state);
 
-      while (!is_valid_match(mask, ii, jj)) {
-	ii = randint(H_PATCH_SIZE, t.size(1) - H_PATCH_SIZE, &local_state);
-	jj = randint(H_PATCH_SIZE, t.size(2) - H_PATCH_SIZE, &local_state);		
+      while (!is_valid_match<bool,PSZ>(mask, ii, jj)) {
+	ii = randint(PSZ/2, t.size(1) - PSZ/2, &local_state);
+	jj = randint(PSZ/2, t.size(2) - PSZ/2, &local_state);
       }
     
-      auto distance = dist(t, i, j, ii, jj);
+      auto distance = dist<T,PSZ>(t, i, j, ii, jj);
       add_to_heap(distance, local_heap, local_heap_shift, ii, jj, k+1);
     }
 
@@ -140,7 +166,7 @@ __global__ void initialise_shift_map(at::PackedTensorAccessor32<T, 3, torch::Res
     }
     states[i][j] = local_state;
   }
-  else if (is_in_boundaries(t, i, j)) {
+  else if (is_in_boundaries<T,3>(t, i, j)) {
     for(int k=0; k < K; k++) {
       shift_map[0][k][i][j] = i;
       shift_map[1][k][i][j] = j;
@@ -153,15 +179,15 @@ __global__ void initialise_shift_map(at::PackedTensorAccessor32<T, 3, torch::Res
 /*
   Compute the distance between patches
  */
-template <typename T>
+template <typename T, int PSZ>
 __device__ T dist(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 		  int32_t x1, int32_t y1,
 		  int32_t x2, int32_t y2,
 		  T cutoff) {
   T dist = 0.0;
   for(int c=0; c < t.size(0); c++) {
-    for(int i = -H_PATCH_SIZE; i < H_PATCH_SIZE + 1; i++) {
-      for(int j = -H_PATCH_SIZE; j < H_PATCH_SIZE + 1; j++) {
+    for(int i = -PSZ/2; i < PSZ/2 + 1; i++) {
+      for(int j = -PSZ/2; j < PSZ/2 + 1; j++) {
 	auto diff = t[c][x1+i][y1+j] - t[c][x2+i][y2+j];
 	dist += diff * diff;
       }
@@ -176,7 +202,7 @@ __device__ T dist(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 }
 
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 			    at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 			    at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
@@ -187,7 +213,7 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
   const int dis[4] = { 0, 1, 0, -1 };
   const int djs[4] = { 1, 0, -1, 0 };
 
-  if(is_in_inner_boundaries(t, i, j) && is_masked(mask, i, j)) {
+  if(is_in_inner_boundaries<T, 3, PSZ>(t, i, j) && is_masked(mask, i, j)) {
     T local_heap[K];
     int local_shift[2*K];
 
@@ -205,7 +231,7 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
 	auto di = dis[index] * step_length;
 	auto dj = djs[index] * step_length;
 
-	if (!(is_in_inner_boundaries(t, i+di, j+dj) && is_masked(mask, i+di, j+dj))) {
+	if (!(is_in_inner_boundaries<T, 3, PSZ>(t, i+di, j+dj) && is_masked(mask, i+di, j+dj))) {
 	  continue;
 	}
 
@@ -213,8 +239,8 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
 	auto ii = shift_map[0][K-1][i+di][j+dj] - di;
 	auto jj = shift_map[1][K-1][i+di][j+dj] - dj;
       
-	if(is_valid_match(mask, ii, jj) && !in_heap(local_shift, ii, jj)) {
-	  auto distance = dist(t, i, j, ii, jj, worst_distance);
+	if(is_valid_match<bool, PSZ>(mask, ii, jj) && !in_heap(local_shift, ii, jj)) {
+	  auto distance = dist<T,PSZ>(t, i, j, ii, jj, worst_distance);
 	  if(distance < worst_distance) {
 	    insert_into_heap(local_heap, local_shift, distance, ii, jj);
 	    worst_distance = local_heap[0];
@@ -232,7 +258,7 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
   }
 }
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t,
 			      at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 			      at::PackedTensorAccessor32<int32_t, 4, torch::RestrictPtrTraits> shift_map,
@@ -241,7 +267,7 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
   int32_t i = blockDim.x * blockIdx.x + threadIdx.x;
   int32_t j = blockDim.y * blockIdx.y + threadIdx.y;
 
-  if(is_in_inner_boundaries(t, i, j) && is_masked(mask, i, j)) {
+  if(is_in_inner_boundaries<T,3,PSZ>(t, i, j) && is_masked(mask, i, j)) {
     T local_heap[K];
     int local_shift[2*K];
     
@@ -280,8 +306,8 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
       int ii = randint(best_ii - w, best_ii + w, &local_state);
       int jj = randint(best_jj - w, best_jj + w, &local_state);
 
-      if(is_valid_match(mask, ii, jj) && !in_heap(local_shift, ii, jj)) {
-	auto distance = dist(t, i, j, ii, jj, worst_distance);
+      if(is_valid_match<bool,PSZ>(mask, ii, jj) && !in_heap(local_shift, ii, jj)) {
+	auto distance = dist<T,PSZ>(t, i, j, ii, jj, worst_distance);
 	if (distance < worst_distance) {
 	  insert_into_heap(local_heap, local_shift, distance, ii, jj);
 	  worst_distance = local_heap[0];
@@ -300,7 +326,7 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
 }
 
 
-template <typename T>
+template <typename T, int PSZ>
 __global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> a,
 				at::PackedTensorAccessor32<bool, 2, torch::RestrictPtrTraits> mask,
 				at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> grad_a,
@@ -310,10 +336,10 @@ __global__ void backward_kernel(at::PackedTensorAccessor32<T, 3, torch::Restrict
   int32_t j = blockDim.y * blockIdx.y + threadIdx.y;
 
   // Compute the gradients using the patches that contain the given pixel (to avoid race conditions)
-  if(is_in_inner_boundaries(a, i, j) && is_masked(mask, i, j)) {
+  if(is_in_inner_boundaries<T,3,PSZ>(a, i, j) && is_masked(mask, i, j)) {
     for(int k=0; k < K; k++) {
-      for(int di=-H_PATCH_SIZE; di < H_PATCH_SIZE; di++) {
-	for(int dj=-H_PATCH_SIZE; dj < H_PATCH_SIZE; dj++) {
+      for(int di=-PSZ/2; di < PSZ/2 + 1; di++) {
+	for(int dj=-PSZ/2; dj < PSZ/2 + 1; dj++) {
 	  // Shifted positions
 	  auto ii = shift_map[0][k][i+di][j+dj];
 	  auto jj = shift_map[1][k][i+di][j+dj];
@@ -333,10 +359,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("patchmatch_masked", &patchmatch_cuda_masked, "PatchMatch implementation",
 	pybind11::arg("t"),
 	pybind11::arg("mask"),
+	pybind11::arg("patch_size") = 3,
 	pybind11::arg("n_iters") = 10);
   m.def("backward_masked", &backward_cuda_masked, "Backward implementation",
 	pybind11::arg("a_masked"),
 	pybind11::arg("mask"),
 	pybind11::arg("shift_map"),
-	pybind11::arg("cost_map_grad"));
+	pybind11::arg("cost_map_grad"),
+	pybind11::arg("patch_size") = 3);
 }

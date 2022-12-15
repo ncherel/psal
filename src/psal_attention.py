@@ -9,19 +9,19 @@ from .patchmatch_masked import backward_masked, patchmatch_masked
 
 class PatchMatch(Function):
     @staticmethod
-    def forward(ctx, a, b, n_iters=10):
-        shift_map, cost_map = patchmatch(a, b, n_iters=n_iters)
+    def forward(ctx, a, b, patch_size=3, n_iters=10):
+        shift_map, cost_map = patchmatch(a, b, patch_size, n_iters=n_iters)
         torch.cuda.synchronize()
-        ctx.save_for_backward(a, b, shift_map)
+        ctx.save_for_backward(a, b, shift_map, torch.tensor(patch_size))
         shift_map = shift_map.type(torch.int64)
         return shift_map, cost_map
 
     @staticmethod
     def backward(ctx, shift_map_grad, cost_map_grad):
-        a, b, shift_map = ctx.saved_tensors
-        grad_a, grad_b = backward(a, b, shift_map, cost_map_grad)
+        a, b, shift_map, patch_size = ctx.saved_tensors
+        grad_a, grad_b = backward(a, b, shift_map, cost_map_grad, patch_size)
         torch.cuda.synchronize()
-        return grad_a, grad_b
+        return grad_a, grad_b, None, None
 
 
 class PSAttention(torch.nn.Module):
@@ -33,7 +33,7 @@ class PSAttention(torch.nn.Module):
         self.aggregation = aggregation
 
     def attention(self, q, k, v):
-        shift_map, cost_map = PatchMatch.apply(q, k, self.n_iters)
+        shift_map, cost_map = PatchMatch.apply(q, k, self.patch_size, self.n_iters)
 
         if not self.aggregation:
             # Simple reconstruction using the central pixel
@@ -85,19 +85,19 @@ class PSAttention(torch.nn.Module):
 
 class PatchMatchMasked(Function):
     @staticmethod
-    def forward(ctx, a, b, n_iters=10):
-        shift_map, cost_map = patchmatch_masked(a, b, n_iters=n_iters)
+    def forward(ctx, a, b, patch_size=3, n_iters=10):
+        shift_map, cost_map = patchmatch_masked(a, b, patch_size=patch_size, n_iters=n_iters)
         torch.cuda.synchronize()
-        ctx.save_for_backward(a, b, shift_map)
+        ctx.save_for_backward(a, b, shift_map, torch.tensor(patch_size))
         shift_map = shift_map.type(torch.int64)
         return shift_map, cost_map
 
     @staticmethod
     def backward(ctx, shift_map_grad, cost_map_grad):
-        a, b, shift_map = ctx.saved_tensors
-        grad_a = backward_masked(a, b, shift_map, cost_map_grad)
+        a, b, shift_map, patch_size = ctx.saved_tensors
+        grad_a = backward_masked(a, b, shift_map, cost_map_grad, patch_size)
         torch.cuda.synchronize()
-        return grad_a, None, None
+        return grad_a, None, None, None
 
 
 class PSAttentionMasked(torch.nn.Module):
@@ -109,7 +109,7 @@ class PSAttentionMasked(torch.nn.Module):
         self.aggregation = aggregation
 
     def attention(self, x, mask, v, T=1.0):
-        shift_map, cost_map = PatchMatchMasked.apply(x, mask, self.n_iters)
+        shift_map, cost_map = PatchMatchMasked.apply(x, mask, self.patch_size, self.n_iters)
 
         if not self.aggregation:
             # Simple reconstruction using the central pixel

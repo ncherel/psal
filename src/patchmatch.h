@@ -7,10 +7,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define K 15
-#define PATCH_SIZE 7
-#define H_PATCH_SIZE 3
-
+#define K 3
 
 /* Random integer generation on gpu [a, b] */
 inline __device__ int randint(int a, int b, int64_t *seed) {
@@ -85,19 +82,16 @@ inline __device__ bool in_heap(int* shifts, int ii, int jj) {
 
 
 
-template <typename T, size_t N>
+template <typename T, size_t N, int PSZ>
 inline __device__ bool is_in_inner_boundaries(at::PackedTensorAccessor32<T, N, torch::RestrictPtrTraits> t, int x, int y) {
   // TODO: Add assert for N > 2
-  return (H_PATCH_SIZE <= x) && (x < t.size(1) - H_PATCH_SIZE) && (H_PATCH_SIZE <= y) && (y < t.size(2) - H_PATCH_SIZE);
+  return (PSZ/2 <= x) && (x < t.size(1) - PSZ/2) && (PSZ/2 <= y) && (y < t.size(2) - PSZ/2);
 }
 
-
-template <typename T>
+template <typename T, int PSZ>
 inline __device__ bool is_valid_match(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrTraits> t, int x, int y) {
-  return is_in_inner_boundaries(t, x, y);
+  return is_in_inner_boundaries<T, 3, PSZ>(t, x, y);
 }
-
-
 
 template <typename T, size_t N>
 inline __device__ bool is_in_boundaries(at::PackedTensorAccessor32<T, N, torch::RestrictPtrTraits> t, int x, int y) {
@@ -109,8 +103,8 @@ inline __device__ bool is_masked(at::PackedTensorAccessor32<bool, 2, torch::Rest
   return mask[x][y];
 }
 
-template <typename T>
+template <typename T, int PSZ>
 inline __device__ bool is_valid_match(at::PackedTensorAccessor32<T, 2, torch::RestrictPtrTraits> t, int x, int y) {
-  return is_in_inner_boundaries(t, x, y) && !is_masked(t, x, y);
+  return is_in_inner_boundaries<T, 2, PSZ>(t, x, y) && !is_masked(t, x, y);
 }
 
