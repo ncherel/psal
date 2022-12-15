@@ -146,10 +146,11 @@ class PSAttentionMasked(torch.nn.Module):
         return torch.sum(all_cost_map[None, None, :, :, :] * v[:,all_shift_map[0], all_shift_map[1]], dim=2)
 
     def forward(self, x, mask, v=None, T=1.0):
-        output = torch.zeros(x.shape[0], x.shape[1], x.shape[2], x.shape[3], device=x.device)
-        # Process batch elements one by one
         if v is None:
             v = x
+
+        output = torch.zeros(x.shape[0], v.shape[1], x.shape[2], x.shape[3], device=x.device)
+        # Process batch elements one by one
         for i, (xi, maski, vi) in enumerate(zip(x, mask, v)):
             output[i] = self.attention(xi, maski, vi, T=T)
 
