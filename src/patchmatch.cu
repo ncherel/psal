@@ -164,8 +164,12 @@ __global__ void initialise_shift_map(at::PackedTensorAccessor32<T, 3, torch::Res
       }
 
       auto distance = dist<T,PSZ>(t1, t2, i, j, ii, jj);
-      add_to_heap(distance, local_heap, local_heap_shift, ii, jj, k+1);
+      local_heap[k] = distance;
+      local_heap_shift[k*2] = ii;
+      local_heap_shift[k*2 + 1] = jj;
     }
+
+    make_heap(local_heap, local_heap_shift);
 
     // Write to memory
     for(int k=0; k < K; k++) {
@@ -238,7 +242,7 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
       local_shift[2*k+1] = shift_map[1][k][i][j];
     }
 
-    auto worst_distance = local_heap[0];
+    auto worst_distance = max(local_heap[1], local_heap[2]);
 
     for(int step_length=1; step_length <= 8; step_length *= 2) {
       for(int index = 0; index < 4; index++) {
@@ -249,14 +253,14 @@ __global__ void propagation(at::PackedTensorAccessor32<T, 3, torch::RestrictPtrT
 	  continue;
 	}
 
-	auto ii = shift_map[0][K-1][i+di][j+dj] - di;
-	auto jj = shift_map[1][K-1][i+di][j+dj] - dj;
+	auto ii = shift_map[0][0][i+di][j+dj] - di;
+	auto jj = shift_map[1][0][i+di][j+dj] - dj;
       
 	if(is_valid_match<T, PSZ>(t2, ii, jj) && !in_heap(local_shift, ii, jj)) {
 	  auto distance = dist<T, PSZ>(t1, t2, i, j, ii, jj, worst_distance);
 	  if(distance < worst_distance) {
-	    insert_into_heap(local_heap, local_shift, distance, ii, jj);
-	    worst_distance = local_heap[0];
+	    insert_new_max(local_heap, local_shift, distance, ii, jj);
+	    worst_distance = max(local_heap[1], local_heap[2]);
 	  }
 	}
       }
@@ -294,11 +298,11 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
     auto local_state = states[i][j];
 
     // Sample around current best
-    auto best_ii = local_shift[2*(K-1)];
-    auto best_jj = local_shift[2*(K-1)+1];
+    auto best_ii = local_shift[2*0];
+    auto best_jj = local_shift[2*0+1];
 
     // Worst match
-    auto worst_distance = local_heap[0];
+    auto worst_distance = max(local_heap[1], local_heap[2]);
 
     const auto alpha = 0.5;
     auto wmax = max(t2.size(1), t2.size(2));
@@ -313,8 +317,8 @@ __global__ void random_search(at::PackedTensorAccessor32<T, 3, torch::RestrictPt
       if(is_valid_match<T,PSZ>(t2, ii, jj) && !in_heap(local_shift, ii, jj)) {
 	auto distance = dist<T,PSZ>(t1, t2, i, j, ii, jj, worst_distance);
 	if (distance < worst_distance) {
-	  insert_into_heap(local_heap, local_shift, distance, ii, jj);
-	  worst_distance = local_heap[0];
+	  insert_new_max(local_heap, local_shift, distance, ii, jj);
+	  worst_distance = max(local_heap[1], local_heap[2]);
 	}
       }
     }
